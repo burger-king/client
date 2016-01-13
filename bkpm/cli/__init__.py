@@ -25,6 +25,12 @@ def _get_model_data():
     return model_data
 
 
+def _get_latest_version(ctx, name):
+    resp = ctx.obj['api'].get_meta(name)
+    meta = resp.json()
+    return meta['version']
+
+
 def _parse_name(name):
     parts = name.split('@')
     if len(parts) == 1:
@@ -39,8 +45,9 @@ def _parse_name(name):
 def cli(ctx, registry):
     """install and manage models"""
     config = util.load_config(config_path, registry)
-    ctx.obj = api.API(config['host'], config.get('token'))
-    ctx.models_dir = config.get('models_dir', os.path.expanduser('~/.models'))
+    ctx.obj = {}
+    ctx.obj['api'] = api.API(config['host'], config.get('token'))
+    ctx.obj['models_dir'] = config.get('models_dir', os.path.expanduser('~/.models'))
 
 
 @cli.command()
@@ -49,7 +56,7 @@ def cli(ctx, registry):
 def register(ctx, name):
     """register a model"""
     try:
-        ctx.obj.register(name)
+        ctx.obj['api'].register(name)
         click.echo('Model "{}" was successfully registered'.format(name))
     except excs.MissingAuthException:
         click.echo('You must specify a token in your config ({}). Run the login command to get one.'.format(config_path))
@@ -59,19 +66,22 @@ def register(ctx, name):
 
 @cli.command()
 @click.pass_context
-def publish(ctx, name):
+def publish(ctx):
     """publish a model"""
+    meta_data = _get_meta_data()
+    model_data = _get_meta_data()
+    name = meta_data['name']
+    version = meta_data['version']
     try:
-        meta_data = _get_meta_data()
-        model_data = _get_meta_data()
-        ctx.obj.publish(meta_data, model_data)
-        click.echo('Model "{}" was successfully registered'.format(name))
+        ctx.obj['api'].publish(meta_data, model_data)
+        click.echo('"{}" ({}) was successfully published'.format(name, version))
     except excs.MissingAuthException:
         click.echo('You must specify a token in your config ({}). Run the login command to get one.'.format(config_path))
     except excs.AuthenticationException:
         click.echo('You are not properly authenticated')
     except excs.ModelConflictException:
-        click.echo('There is already a model named "{}"'.format(name))
+        version = _get_latest_version(ctx, name)
+        click.echo('Version must be greater than {}'.format(version))
 
 
 @cli.command()
@@ -80,15 +90,22 @@ def publish(ctx, name):
 def install(ctx, name):
     """install a model"""
     name, version = _parse_name(name)
-    try:
-        resp = ctx.obj.get_archive(name, version)
-        util.extract_model(resp.content, ctx.models_dir)
-        click.echo('"{}" ({}) was successfully installed'.format(name, version))
-    except excs.ModelNotFoundException:
-        if version is 'latest':
-            click.echo('No model "{}" was found'.format(name))
-        else:
-            click.echo('No model "{}" ({}) was found'.format(name, version))
+    if version == 'latest':
+        version = _get_latest_version(ctx, name)
+    model_path = os.path.join(ctx.obj['models_dir'], name)
+    path = os.path.join(model_path, version)
+    if os.path.isdir(path):
+        click.echo('"{}" ({}) is already installed'.format(name, version))
+    else:
+        try:
+            resp = ctx.obj['api'].get_archive(name, version)
+            version = util.extract_model(resp.content, ctx.obj['models_dir'])
+            click.echo('"{}" ({}) was successfully installed'.format(name, version))
+        except excs.ModelNotFoundException:
+            if version is 'latest':
+                click.echo('No model "{}" was found'.format(name))
+            else:
+                click.echo('No model "{}" ({}) was found'.format(name, version))
 
 
 @cli.command()
@@ -97,14 +114,20 @@ def install(ctx, name):
 def uninstall(ctx, name):
     """uninstall a model"""
     name, version = _parse_name(name)
-    path = os.path.join(ctx.models_dir, name, version)
+    if version == 'latest':
+        version = _get_latest_version(ctx, name)
+    model_path = os.path.join(ctx.obj['models_dir'], name)
+    path = os.path.join(model_path, version)
     if not os.path.isdir(path):
         if version is 'latest':
-            click.echo('Model "{}" is not installed'.format(name))
+            click.echo('"{}" is not installed'.format(name))
         else:
-            click.echo('Model "{}" ({}) is not installed'.format(name, version))
+            click.echo('"{}" ({}) is not installed'.format(name, version))
     else:
         shutil.rmtree(path)
+        if not os.listdir(model_path):
+            os.rmdir(model_path)
+        click.echo('"{}" ({}) was successfully uninstalled'.format(name, version))
 
 
 @cli.command()
@@ -114,7 +137,7 @@ def unregister(ctx, name):
     """unregister a model"""
     name, version = _parse_name(name)
     try:
-        ctx.obj.delete(name, version)
+        ctx.obj['api'].delete(name, version)
         if version is 'all':
             click.echo('Version {} of "{}" was successfully deleted'.format(version, name))
         else:
@@ -135,15 +158,19 @@ def unregister(ctx, name):
 @click.pass_context
 def search(ctx, query):
     """search through models"""
-    resp = ctx.obj.search(query)
-    results = resp.json['results']
+    resp = ctx.obj['api'].search(query)
+    results = resp.json()['results']
     if not results:
         click.echo('No results for "{}"'.format(query))
     else:
         for result in results:
-            desc = result['desc']
-            click.echo('{} --> {}'.format(
+            desc = result['description']
+            vers = result['version']
+            if desc is None:
+                desc = 'No description provided.'
+            click.echo('{} ({}) --> {}'.format(
                 result['name'],
+                vers if vers is not None else 'none',
                 (desc[:78] + '..') if len(desc) > 80 else desc))
 
 
@@ -151,7 +178,7 @@ def search(ctx, query):
 @click.pass_context
 def signup(ctx):
     """signup as a new user"""
-    signup_url = '{}/users/signup'.format(ctx.obj.host)
+    signup_url = '{}/users/signup'.format(ctx.obj['api'].host)
     click.launch(signup_url)
     click.echo('You can login via the `login` command')
 
@@ -160,8 +187,7 @@ def signup(ctx):
 @click.pass_context
 def login(ctx):
     """login/authenticate"""
-    login_url = '{}/users/login'.format(ctx.obj.host)
+    login_url = '{}/users/login'.format(ctx.obj['api'].host)
     click.launch(login_url)
-    user = input('Enter your username: ')
     token = input('Enter your token: ')
-    util.save_config(config_path, registry='default', user=user, token=token)
+    util.save_config(config_path, registry='default', token=token)

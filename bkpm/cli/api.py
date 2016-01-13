@@ -39,7 +39,7 @@ class API():
     @api
     def register(self, name):
         return requests.post('{}/models/register'.format(self.host),
-                             data={'name':name},
+                             json={'name':name},
                              headers=self._headers())
 
     @api
@@ -49,7 +49,9 @@ class API():
     @api
     def publish(self, meta_data, model_data):
         name = meta_data['name']
-        return requests.post(self._model(name), headers=self._headers())
+        return requests.post(self._model(name),
+                             headers=self._headers(),
+                             json={'meta': meta_data, 'model': model_data})
 
     @api
     def get_archive(self, name, version):
@@ -58,4 +60,8 @@ class API():
     @api
     def search(self, query):
         return requests.post('{}/models/search'.format(self.host),
-                             data={'query':query})
+                             json={'query':query})
+
+    @api
+    def get_meta(self, name):
+        return requests.get('{}.json'.format(self._model(name)))

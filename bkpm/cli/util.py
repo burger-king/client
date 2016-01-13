@@ -18,8 +18,11 @@ def extract_model(data, outdir):
         meta = json.load(f)
     version, name = meta['version'], meta['name']
     path = os.path.join(outdir, name, version)
+    if not os.path.isdir(path):
+        os.makedirs(path)
     os.rename('/tmp/meta.json', os.path.join(path, 'meta.json'))
     os.rename('/tmp/model.json', os.path.join(path, 'model.json'))
+    return version
 
 
 def load_config(path, registry='default'):
